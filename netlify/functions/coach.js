@@ -1,55 +1,77 @@
 // netlify/functions/coach.js
+// Drop-in replacement that supports a "passthrough" mode for Ask the Coach.
+// - If body.passthrough === true: send exactly the user's question to the OpenAI API with no extra context.
+// - Else: build a concise coaching prompt from provided fields (backward-compatible with prior calls).
+// Requires environment variable: OPENAI_API_KEY
+
 export async function handler(event) {
-  try{
+  try {
     if (event.httpMethod !== "POST") {
       return { statusCode: 405, body: JSON.stringify({ error: "Method not allowed" }) };
     }
-    const body = JSON.parse(event.body || "{}");
-    const prompt = (body.coach_prompt_api || "").trim();
-    const userQ  = (body.user_question || "").trim();
-    const record = body.record || {};
 
+    const body = JSON.parse(event.body || "{}");
+    const passthrough = !!body.passthrough;
+    const userQ = (body.user_question || "").trim();
+    const promptCSV = (body.coach_prompt_api || "").trim();
+    const record = body.record || {};
     const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 
-    const baseContext = [
-      prompt && `Coach prompt (from CSV): ${prompt}`,
-      userQ && `User question: ${userQ}`,
-      record && Object.keys(record).length ? `Record: ${JSON.stringify(record).slice(0, 1000)}` : ""
-    ].filter(Boolean).join("\n\n");
-
-    if (OPENAI_API_KEY){
-      try{
-        const resp = await fetch("https://api.openai.com/v1/chat/completions", {
-          method:"POST",
-          headers:{
-            "Content-Type":"application/json",
-            "Authorization": `Bearer ${OPENAI_API_KEY}`
-          },
-          body: JSON.stringify({
-            model: "gpt-4o-mini",
-            messages: [
-              {role:"system", content:"You are a cautious, older-adult exercise coach focused on brain health. Follow safety gates strictly. Be concise and motivational. Not a medical device."},
-              {role:"user", content: baseContext || "Provide brief, brain-health–focused exercise coaching for an older adult."}
-            ],
-            temperature: 0.2
-          })
-        });
-        if (!resp.ok) throw new Error("OpenAI error");
-        const data = await resp.json();
-        const content = data.choices?.[0]?.message?.content || "";
-        return { statusCode: 200, body: JSON.stringify({ message: content }) };
-      }catch(e){
-        // fallthrough
-      }
+    // If no API key, return an explicit fallback (keeps UI functional)
+    if (!OPENAI_API_KEY) {
+      const offline = passthrough
+        ? "AI unavailable (no API key)."
+        : [
+            record.coach_script_non_api || "",
+            record.protocol_start ? `Protocol: ${record.protocol_start}` : "",
+            record.progression_rule ? `Progression: ${record.progression_rule}` : ""
+          ].filter(Boolean).join(" — ") || "Rules-based guidance unavailable for this item.";
+      return { statusCode: 200, body: JSON.stringify({ message: offline }) };
     }
 
-    const proto = record["protocol_start"] || "";
-    const prog  = record["progression_rule"] || "";
-    const non   = record["coach_script_non_api"] || "";
-    const result = [non, proto && `Protocol: ${proto}`, prog && `Progression: ${prog}`]
-      .filter(Boolean).join(" — ") || "Rules-based guidance is unavailable for this item.";
-    return { statusCode: 200, body: JSON.stringify({ message: result }) };
-  }catch(err){
-    return { statusCode: 500, body: JSON.stringify({ error: "Server error", detail: String(err) }) };
+    // Build messages
+    let messages;
+    if (passthrough) {
+      // Try to mirror a fresh chat: only the user's question, temperature 0.
+      messages = [{ role: "user", content: userQ }];
+    } else {
+      const contextLines = [];
+      if (promptCSV) contextLines.push(promptCSV);
+      if (record.protocol_start) contextLines.push(`Protocol: ${record.protocol_start}`);
+      if (record.progression_rule) contextLines.push(`Progression: ${record.progression_rule}`);
+      const context = contextLines.join("\n");
+
+      messages = [
+        { role: "system", content: "You are a precise exercise coach for older adults. Be concise and safety-first." },
+        context && { role: "system", content: context },
+        userQ && { role: "user", content: userQ }
+      ].filter(Boolean);
+    }
+
+    // Call OpenAI Chat Completions
+    const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: "gpt-5",         // use the same family as ChatGPT to minimize divergence
+        temperature: 0.0,       // stabilize output
+        messages
+      })
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      return { statusCode: resp.status, body: JSON.stringify({ error: "openai_error", detail: errText }) };
+    }
+
+    const data = await resp.json();
+    const answer = data?.choices?.[0]?.message?.content || "";
+    return { statusCode: 200, body: JSON.stringify({ message: answer }) };
+
+  } catch (err) {
+    return { statusCode: 500, body: JSON.stringify({ error: "server_error", detail: String(err) }) };
   }
 }
