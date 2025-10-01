@@ -19,6 +19,7 @@ body{margin:0;font-family:Inter,system-ui,Arial,Helvetica,sans-serif;background:
 @media (max-width:800px){.grid-2,.grid-3{grid-template-columns:1fr}}
 .field label{display:block;font-weight:600;margin-bottom:6px}
 .field input,.field select,.field textarea{width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:#0f162e;color:var(--text)}
+.radio{display:inline-flex;align-items:center;gap:6px;margin-right:12px}
 .actions{display:flex;gap:10px;align-items:center}
 button{border:1px solid var(--border);background:linear-gradient(90deg,var(--accent),var(--accent-2));color:#001018;font-weight:700;padding:10px 14px;border-radius:12px;cursor:pointer}
 button.secondary{background:#0f162e;color:var(--text)}
@@ -30,3 +31,5 @@ details summary{cursor:pointer;font-weight:600}
 .kv{display:flex;flex-wrap:wrap;gap:6px}
 .notice{border-left:4px solid var(--danger);padding:10px 12px;background:#180f0b}
 .ok{border-left:4px solid var(--ok);padding:10px 12px;background:#0f180f}
+#p-table{width:100%;border-collapse:collapse}
+#p-table th,#p-table td{padding:8px;border-bottom:1px solid var(--border);text-align:left}
