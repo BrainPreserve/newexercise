@@ -7,12 +7,12 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./assets/styles.css?v=fix2">
+  <link rel="stylesheet" href="./assets/styles.css?v=ux3">
 </head>
 <body>
   <header class="site-header">
     <h1>BrainPreserve — Brain Health Exercise</h1>
-    <p class="tagline">Safe, older‑adult–friendly programming with brain‑first gates.</p>
+    <p class="tagline">Safe, older-adult–friendly programming with brain-first gates.</p>
   </header>
 
   <main class="container">
@@ -34,8 +34,8 @@
           <input id="sleep_eff" type="number" min="0" max="100" step="1" placeholder="e.g., 86">
         </div>
         <div class="field">
-          <label for="hrv_delta">HRV vs 7-day baseline (%)</label>
-          <input id="hrv_delta" type="number" step="1" placeholder="-9 for down, +7 for up">
+          <label for="hrv_value">HRV (ms)</label>
+          <input id="hrv_value" type="number" min="0" max="200" step="1" placeholder="e.g., 42">
         </div>
         <div class="field">
           <label for="sbp">Systolic BP (mmHg)</label>
@@ -50,13 +50,17 @@
           <input id="cgm_tir" type="number" min="0" max="100" step="1" placeholder="e.g., 72">
         </div>
         <div class="field">
-          <label for="goals">Goals</label>
-          <select id="goals" multiple></select>
+          <label for="hscrp">hsCRP (mg/L)</label>
+          <input id="hscrp" type="number" min="0" max="20" step="0.1" placeholder="e.g., 2.5">
         </div>
-        <div class="field">
-          <label for="types">Exercise Type</label>
-          <select id="types" multiple></select>
-        </div>
+
+        <fieldset class="field" id="type-fieldset">
+          <legend><strong>Exercise Type</strong></legend>
+          <label class="radio"><input type="radio" name="etype" value="muscular"> Muscular</label>
+          <label class="radio"><input type="radio" name="etype" value="aerobic"> Aerobic</label>
+          <label class="radio"><input type="radio" name="etype" value="both" checked> Both</label>
+        </fieldset>
+
         <div class="actions">
           <button id="generate-plan" type="button">Generate Today’s Plan</button>
           <button id="clear-plan" type="button" class="secondary">Clear</button>
@@ -87,9 +91,47 @@
 
     <!-- PROGRESS -->
     <section id="tab-progress" class="tab-panel" role="tabpanel">
-      <h2>Progress (MVP placeholder)</h2>
-      <p>Log sessions and visualize trends here.</p>
-      <div id="progress-output" class="stack"></div>
+      <h2>Progress</h2>
+      <form id="progress-form" class="grid-3">
+        <div class="field">
+          <label for="p-date">Date</label>
+          <input id="p-date" type="date">
+        </div>
+        <div class="field">
+          <label for="p-type">Exercise Type</label>
+          <select id="p-type">
+            <option value="muscular">Muscular</option>
+            <option value="aerobic">Aerobic</option>
+            <option value="both">Both</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="p-duration">Duration (min)</label>
+          <input id="p-duration" type="number" min="0" step="1" placeholder="e.g., 30">
+        </div>
+        <div class="field">
+          <label for="p-rpe">RPE (1–10)</label>
+          <input id="p-rpe" type="number" min="1" max="10" step="1" placeholder="e.g., 7">
+        </div>
+        <div class="field">
+          <label for="p-hrv">HRV (ms)</label>
+          <input id="p-hrv" type="number" min="0" max="200" step="1" placeholder="e.g., 42">
+        </div>
+        <div class="actions">
+          <button id="p-add" type="button">Add Entry</button>
+          <button id="p-clear" type="button" class="secondary">Clear All</button>
+        </div>
+      </form>
+
+      <div class="card">
+        <h3>Entries</h3>
+        <table id="p-table">
+          <thead>
+            <tr><th>Date</th><th>Type</th><th>Duration</th><th>RPE</th><th>HRV</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </section>
 
     <!-- ASK -->
@@ -97,10 +139,11 @@
       <h2>Ask the Coach</h2>
       <div class="field">
         <label for="ask-input">Your question</label>
-        <textarea id="ask-input" rows="5" placeholder="e.g., Is Zone 2 or resistance best today with HRV -8% and SBP 158?"></textarea>
+        <textarea id="ask-input" rows="5" placeholder="e.g., Is Zone 2 or resistance best today with SBP 158 and hsCRP 3.2?"></textarea>
       </div>
       <div class="actions">
         <button id="ask-send" type="button">Ask</button>
+        <button id="ask-clear" type="button" class="secondary">Ask Another Question</button>
       </div>
       <div id="ask-output" class="stack"></div>
     </section>
@@ -122,6 +165,6 @@
     <small>Not a medical device. If you have concerning symptoms, stop and seek care.</small>
   </footer>
 
-  <script src="./assets/app.js?v=fix2" defer></script>
+  <script src="./assets/app.js?v=ux3" defer></script>
 </body>
 </html>
