@@ -1,0 +1,13 @@
+
+[build]
+  publish = "."
+  functions = "netlify/functions"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "same-origin"
+    Cache-Control = "no-cache"
+
+# No inline JS used; CSP can be added later as needed.

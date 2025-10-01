@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Brain Health Exercise App (Starter)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./assets/styles.css?v=starter1">
+</head>
+<body>
+  <header class="site-header">
+    <h1>BrainPreserve — Brain Health Exercise App</h1>
+    <p class="tagline">Revitalize your brain in real time with safe, evidence‑based exercise coaching.</p>
+  </header>
+
+  <main class="container">
+    <nav class="tabs" role="tablist" aria-label="Main">
+      <button class="tab active" data-tab="plan" role="tab" aria-selected="true">Plan</button>
+      <button class="tab" data-tab="library" role="tab" aria-selected="false">Exercise Library</button>
+      <button class="tab" data-tab="progress" role="tab" aria-selected="false">Progress</button>
+      <button class="tab" data-tab="ask" role="tab" aria-selected="false">Ask the Coach</button>
+      <button class="tab" data-tab="data" role="tab" aria-selected="false">Data &amp; Devices</button>
+      <button class="tab" data-tab="settings" role="tab" aria-selected="false">Settings</button>
+    </nav>
+
+    <!-- PLAN -->
+    <section id="tab-plan" class="tab-panel active" role="tabpanel">
+      <h2>Today's Plan</h2>
+      <form id="plan-form" class="grid-2">
+        <div class="field">
+          <label for="sleep_eff">Sleep efficiency (%)</label>
+          <input id="sleep_eff" type="number" min="0" max="100" step="1" placeholder="e.g., 86">
+        </div>
+        <div class="field">
+          <label for="hrv_delta">HRV vs 7‑day baseline (%)</label>
+          <input id="hrv_delta" type="number" step="1" placeholder="-9 for down, +7 for up">
+        </div>
+        <div class="field">
+          <label for="sbp">Systolic BP (resting)</label>
+          <input id="sbp" type="number" min="80" max="240" step="1" placeholder="e.g., 124">
+        </div>
+        <div class="field">
+          <label for="cgm_tir">CGM Time‑in‑Range 70–180 (%)</label>
+          <input id="cgm_tir" type="number" min="0" max="100" step="1" placeholder="e.g., 72">
+        </div>
+        <div class="field">
+          <label for="goals">Goals</label>
+          <select id="goals" multiple></select>
+        </div>
+        <div class="field">
+          <label for="types">Exercise Type</label>
+          <select id="types" multiple></select>
+        </div>
+        <div class="actions">
+          <button id="generate-plan" type="button">Generate Today’s Plan</button>
+          <button id="clear-plan" type="button" class="secondary">Clear</button>
+        </div>
+      </form>
+
+      <div id="plan-output" class="stack"></div>
+    </section>
+
+    <!-- LIBRARY -->
+    <section id="tab-library" class="tab-panel" role="tabpanel">
+      <h2>Exercise Library</h2>
+      <form id="library-form" class="grid-3">
+        <div class="field">
+          <label for="lib-types">Exercise Type(s)</label>
+          <select id="lib-types" multiple></select>
+        </div>
+        <div class="field">
+          <label for="lib-goals">Goal(s)</label>
+          <select id="lib-goals" multiple></select>
+        </div>
+        <div class="actions">
+          <button id="apply-filters" type="button">Apply Filters</button>
+          <button id="clear-filters" type="button" class="secondary">Clear</button>
+        </div>
+      </form>
+      <div id="library-output" class="stack"></div>
+    </section>
+
+    <!-- PROGRESS -->
+    <section id="tab-progress" class="tab-panel" role="tabpanel">
+      <h2>Progress (MVP placeholder)</h2>
+      <p>In MVP, you can log sessions and visualize weekly trends here.</p>
+      <div id="progress-output" class="stack"></div>
+    </section>
+
+    <!-- ASK -->
+    <section id="tab-ask" class="tab-panel" role="tabpanel">
+      <h2>Ask the Coach</h2>
+      <div class="field">
+        <label for="ask-input">Your question</label>
+        <textarea id="ask-input" rows="5" placeholder="e.g., Is Zone 2 or resistance best for me today if my HRV is -8% and SBP is 158?"></textarea>
+      </div>
+      <div class="actions">
+        <button id="ask-send" type="button">Ask</button>
+      </div>
+      <div id="ask-output" class="stack"></div>
+    </section>
+
+    <!-- DATA -->
+    <section id="tab-data" class="tab-panel" role="tabpanel">
+      <h2>Data &amp; Devices (MVP placeholder)</h2>
+      <ul>
+        <li>Upload labs (.csv)</li>
+        <li>Manual BP and sleep entries</li>
+      </ul>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="tab-settings" class="tab-panel" role="tabpanel">
+      <h2>Settings</h2>
+      <p>Configure goals, alerts, and preferences.</p>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <small>Not a medical device. If you have concerning symptoms (e.g., chest pain, severe breathlessness, near‑syncope), stop and seek care.</small>
+  </footer>
+
+  <script src="./assets/app.js?v=starter1" defer></script>
+</body>
+</html>
