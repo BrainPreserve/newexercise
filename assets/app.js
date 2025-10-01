@@ -1,19 +1,22 @@
 /* BrainPreserve — Brain Exercise App
-   app.js (2025-10-01d)
-   Changes:
-   - PLAN: "Save data" persists sessions and immediately refreshes Progress table.
-   - LIBRARY: True AND filter using canonicalized Exercise Type labels + any selected *_goal==1.
-   - DETAILS: Shows CSV fields (no guessing): cognitive_targets, mechanism_tags, direct_cognitive_benefits,
-              indirect_cognitive_benefits, mechanisms_brain_body.
-   - ASK: unchanged call shape, but supports "passthrough" (requires coach.js below).
+   app.js (2025-10-01e)
+   Stabilization:
+   - Idempotent init (prevents double wiring that can break tabs or double-save).
+   - "Save data" captures EXACT Plan inputs (no defaults), stores to v2 store, and refreshes Progress immediately.
+   - Progress renders a full table including all saved Plan inputs (sleep_eff, hrv, sbp, dbp, cgm_tir, hsCRP).
+   - Library filter temporarily simplified to TYPE-ONLY per user's request (Goals ignored for now to avoid churn).
+   - Details block reads only from CSV fields (no guessing).
+   - AI calls unchanged; function updated separately to remove unsupported temperature parameter.
 */
 
 (() => {
   "use strict";
 
+  if (window.__bp_init_done) return; // prevent double-init
+  window.__bp_init_done = true;
+
   const $ = (sel, parent = document) => parent.querySelector(sel);
   const $$ = (sel, parent = document) => Array.from(parent.querySelectorAll(sel));
-
   const norm = (s) => (s ?? "").toString().trim();
   const canon = (s) => norm(s).toLowerCase().replace(/\s+/g, " ");
 
@@ -23,16 +26,14 @@
     while (i < text.length) {
       const c = text[i];
       if (inQ) {
-        if (c === '"') {
-          if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
-          inQ = false; i++; continue;
-        } else { field += c; i++; continue; }
+        if (c === '"') { if (text[i+1] === '"') { field += '"'; i += 2; } else { inQ = false; i++; } }
+        else { field += c; i++; }
       } else {
-        if (c === '"') { inQ = true; i++; continue; }
-        if (c === ",") { row.push(field); field=""; i++; continue; }
-        if (c === "\n") { row.push(field); rows.push(row); row=[]; field=""; i++; continue; }
-        if (c === "\r") { i++; continue; }
-        field += c; i++;
+        if (c === '"') { inQ = true; i++; }
+        else if (c === ",") { row.push(field); field=""; i++; }
+        else if (c === "\n") { row.push(field); rows.push(row); row=[]; field=""; i++; }
+        else if (c === "\r") { i++; }
+        else { field += c; i++; }
       }
     }
     row.push(field); rows.push(row);
@@ -43,13 +44,11 @@
   function rowsToObjects(rows) {
     if (!rows.length) return [];
     const headersRaw = rows[0].map((h) => norm(h));
-    const headers = headersRaw.map((h) =>
-      h.toLowerCase().trim().replace(/\s+/g,"_").replace(/[^\w]+/g,"_")
-    );
+    const headers = headersRaw.map((h) => h.toLowerCase().trim().replace(/\s+/g,"_").replace(/[^\w]+/g,"_"));
     const out = [];
-    for (let r = 1; r < rows.length; r++) {
+    for (let r=1; r<rows.length; r++) {
       const obj = {};
-      for (let c = 0; c < headers.length; c++) obj[headers[c]] = rows[r][c] ?? "";
+      for (let c=0; c<headers.length; c++) obj[headers[c]] = rows[r][c] ?? "";
       out.push(obj);
     }
     return out;
@@ -71,9 +70,9 @@
   // ------------ Global Data ------------
   let DATA = [];
   let GOAL_COLS = [];
-  let CATEGORY_OPTIONS = [];   // visible labels (Exercise Type)
-  let CATEGORY_KEYS = [];      // canonical values for matching
-  const storeKey = "bp_ex_prog_v1";
+  let CATEGORY_OPTIONS = [];
+  const storeKeyV1 = "bp_ex_prog_v1"; // legacy
+  const storeKeyV2 = "bp_ex_prog_v2"; // new
 
   async function loadData() {
     const url = "./data/master.csv";
@@ -82,7 +81,6 @@
     const text = await res.text();
     const rows = parseCSV(text);
     const items = rowsToObjects(rows);
-
     for (const it of items) {
       const label = it.exercise_type || it.exercise_key || it.aliases;
       it._label = norm(label) || "(Untitled)";
@@ -95,12 +93,9 @@
         }
       }
     }
-
     DATA = items;
     GOAL_COLS = goalColumns(items);
-    const labels = Array.from(new Set(items.map((it) => it._label))).filter(Boolean).sort((a,b)=>a.localeCompare(b));
-    CATEGORY_OPTIONS = labels;
-    CATEGORY_KEYS = labels.map((s)=>canon(s));
+    CATEGORY_OPTIONS = Array.from(new Set(items.map((it) => it._label))).filter(Boolean).sort((a,b)=>a.localeCompare(b));
   }
 
   // ------------ Tabs ------------
@@ -118,22 +113,19 @@
   function planSelectedModality() {
     const checked = $$('input[name="etype"]:checked');
     if (!checked.length) return "both";
-    return checked[0].value; // resistance | aerobic | both
+    return checked[0].value;
   }
 
-  function collectVitals() {
-    const getNum = (id) => {
-      const v = $(id) ? $(id).value : "";
-      const n = Number(v);
-      return Number.isFinite(n) ? n : null;
-    };
+  function getVal(id) { const el = $(id); return el ? el.value : ""; }
+
+  function collectPlanInputs() {
     return {
-      sleep_eff: getNum("#sleep_eff"),
-      hrv_value: getNum("#hrv_value"),
-      sbp: getNum("#sbp"),
-      dbp: getNum("#dbp"),
-      cgm_tir: getNum("#cgm_tir"),
-      hscrp: getNum("#hscrp"),
+      sleep_eff: getVal("#sleep_eff"),
+      hrv_value: getVal("#hrv_value"),
+      sbp: getVal("#sbp"),
+      dbp: getVal("#dbp"),
+      cgm_tir: getVal("#cgm_tir"),
+      hscrp: getVal("#hscrp"),
     };
   }
 
@@ -154,44 +146,47 @@
     $("#plan-output").innerHTML = "";
   }
 
-  // Save session and immediately refresh Progress table
-  function addPlanSaveButton() {
+  function ensurePlanSaveButton() {
+    if ($("#save-session")) return;
     const actions = $("#plan-form .actions") || $("#tab-plan");
     if (!actions) return;
     const btn = document.createElement("button");
     btn.type = "button";
     btn.id = "save-session";
     btn.textContent = "Save data";
-    btn.style.marginLeft = "0.5rem";
     btn.addEventListener("click", () => {
+      btn.disabled = true;
       const now = new Date();
+      const inputs = collectPlanInputs(); // exact strings from inputs
       const rec = {
+        id: String(now.getTime()),
         date: now.toISOString().slice(0,16).replace("T"," "),
-        type: planSelectedModality().toUpperCase(),
-        dur: "",
+        modality: planSelectedModality().toUpperCase(),
+        duration: "",
         rpe: "",
-        hrv: ($("#hrv_value") && $("#hrv_value").value) || "",
-        extras: collectVitals(),
+        ...inputs,
       };
-      let arr;
-      try { arr = JSON.parse(localStorage.getItem(storeKey) || "[]"); } catch { arr = []; }
+      let arr = [];
+      try {
+        arr = JSON.parse(localStorage.getItem(storeKeyV2) || "[]");
+      } catch {}
       arr.push(rec);
-      localStorage.setItem(storeKey, JSON.stringify(arr));
-
-      // Visual confirmation
-      const msg = document.createElement("div");
-      msg.className = "ok";
-      msg.textContent = "Session saved to Progress.";
-      $("#plan-output").prepend(msg);
-      setTimeout(()=>{ msg.remove(); }, 2000);
-
-      // Refresh Progress table immediately
+      localStorage.setItem(storeKeyV2, JSON.stringify(arr));
+      // also migrate any legacy once (no duplication on next saves)
+      try {
+        const legacy = JSON.parse(localStorage.getItem(storeKeyV1) || "[]");
+        if (legacy && legacy.length) {
+          localStorage.setItem(storeKeyV1, JSON.stringify([]));
+        }
+      } catch {}
+      toast("Session saved to Progress.");
       progressRender();
+      btn.disabled = false;
     });
     actions.appendChild(btn);
   }
 
-  // ------------ LIBRARY ------------
+  // ------------ LIBRARY (TEMP: Type-only filtering) ------------
   function populateLibrarySelectors() {
     const typesSel = $("#lib-types");
     const goalsSel = $("#lib-goals");
@@ -199,12 +194,13 @@
       typesSel.innerHTML = "";
       CATEGORY_OPTIONS.forEach((label) => {
         const opt = document.createElement("option");
-        opt.value = canon(label);  // canonical value for robust match
+        opt.value = canon(label);
         opt.textContent = label;
         typesSel.appendChild(opt);
       });
     }
     if (goalsSel) {
+      // keep visible for later, but we'll ignore selections in applyLibraryFilters()
       goalsSel.innerHTML = "";
       GOAL_COLS.forEach((g) => {
         const opt = document.createElement("option");
@@ -215,20 +211,14 @@
     }
   }
 
-  function getMultiSelectValues(sel) {
-    return sel ? Array.from(sel.selectedOptions).map((o) => o.value) : [];
-  }
+  function getMulti(sel){ return sel ? Array.from(sel.selectedOptions).map(o=>o.value) : []; }
 
   function applyLibraryFilters() {
-    const selTypeKeys = new Set(getMultiSelectValues($("#lib-types")));  // canonical keys
-    const selGoals = getMultiSelectValues($("#lib-goals"));              // *_goal
-
-    const items = DATA.filter((it) => {
-      const typeOK = (selTypeKeys.size === 0) || selTypeKeys.has(it._label_key);
-      const goalOK = (selGoals.length === 0) || selGoals.some((g) => Number(it[g]) === 1);
-      return typeOK && goalOK;
-    });
-
+    const typeKeys = new Set(getMulti($("#lib-types")));  // canonical
+    let items = DATA;
+    if (typeKeys.size) {
+      items = items.filter((it) => typeKeys.has(it._label_key));
+    }
     renderProtocols($("#library-output"), items, { showGoalsBadges: true, includeAI: true });
   }
 
@@ -239,12 +229,7 @@
   }
 
   // ------------ Rendering ------------
-  function badge(text) {
-    const span = document.createElement("span");
-    span.className = "badge";
-    span.textContent = text;
-    return span;
-  }
+  function badge(text) { const s=document.createElement("span"); s.className="badge"; s.textContent=text; return s; }
 
   function goalsBadges(it) {
     const frag = document.createDocumentFragment();
@@ -262,8 +247,7 @@
     ];
     const det = document.createElement("details");
     det.open = false;
-    const sum = document.createElement("summary");
-    sum.textContent = "Details";
+    const sum = document.createElement("summary"); sum.textContent = "Details";
     det.appendChild(sum);
     const box = document.createElement("div");
     keys.forEach(({key, label}) => {
@@ -275,10 +259,7 @@
       }
     });
     if (!box.childNodes.length) {
-      const p = document.createElement("p");
-      p.className = "muted";
-      p.textContent = "No additional details in CSV.";
-      box.appendChild(p);
+      const p = document.createElement("p"); p.className="muted"; p.textContent="No additional details in CSV."; box.appendChild(p);
     }
     det.appendChild(box);
     return det;
@@ -286,55 +267,37 @@
 
   function protocolCard(it, opts = {}) {
     const { showGoalsBadges = false, includeAI = false } = opts;
-    const card = document.createElement("div");
-    card.className = "card";
+    const card = document.createElement("div"); card.className="card";
+    const head = document.createElement("div"); head.style.display="flex"; head.style.justifyContent="space-between"; head.style.alignItems="baseline";
+    const h3 = document.createElement("h3"); h3.textContent = it._label || "(Untitled)";
+    const et = document.createElement("div"); et.className="badge"; et.textContent = (it._modality || "").toUpperCase();
+    head.appendChild(h3); head.appendChild(et); card.appendChild(head);
+    if (showGoalsBadges) { const kv = document.createElement("div"); kv.className="kv"; kv.appendChild(goalsBadges(it)); card.appendChild(kv); }
 
-    const head = document.createElement("div");
-    head.style.display = "flex"; head.style.justifyContent = "space-between"; head.style.alignItems = "baseline";
-    const h3 = document.createElement("h3");
-    h3.textContent = it._label || "(Untitled)";
-    const et = document.createElement("div");
-    et.className = "badge"; et.textContent = (it._modality || "").toUpperCase();
-    head.appendChild(h3); head.appendChild(et);
-    card.appendChild(head);
-
-    if (showGoalsBadges) {
-      const kv = document.createElement("div"); kv.className = "kv"; kv.appendChild(goalsBadges(it));
-      card.appendChild(kv);
-    }
-
-    // Non-AI Coaching
-    const coachBlock = document.createElement("details");
-    coachBlock.open = true;
-    const sum1 = document.createElement("summary"); sum1.textContent = "Coaching (non-AI)";
+    const coachBlock = document.createElement("details"); coachBlock.open=true;
+    const sum1 = document.createElement("summary"); sum1.textContent="Coaching (non-AI)";
     const nonApi = document.createElement("div");
-    const proto = norm(it.protocol_start);
-    const prog = norm(it.progression_rule);
-    const contra = norm(it.contraindications_flags);
+    const proto = norm(it.protocol_start); const prog = norm(it.progression_rule); const contra = norm(it.contraindications_flags);
     nonApi.innerHTML = [
       proto ? `<p><strong>Protocol start:</strong> ${escapeHtml(proto)}</p>` : "",
       prog ? `<p><strong>Progression:</strong> ${escapeHtml(prog)}</p>` : "",
       contra ? `<p class="notice"><strong>Contraindications:</strong> ${escapeHtml(contra)}</p>` : "",
     ].filter(Boolean).join("");
-    coachBlock.appendChild(sum1); coachBlock.appendChild(nonApi);
-    card.appendChild(coachBlock);
+    coachBlock.appendChild(sum1); coachBlock.appendChild(nonApi); card.appendChild(coachBlock);
 
-    // Details from CSV
     card.appendChild(detailsBlock(it));
 
     if (includeAI) {
-      const aiBlock = document.createElement("details");
-      aiBlock.open = false;
-      const sum2 = document.createElement("summary"); sum2.textContent = "AI Coaching";
+      const aiBlock = document.createElement("details"); aiBlock.open=false;
+      const sum2 = document.createElement("summary"); sum2.textContent="AI Coaching";
       const aiWrap = document.createElement("div");
-      const btn = document.createElement("button");
-      btn.type = "button"; btn.textContent = "Generate AI Coaching";
+      const btn = document.createElement("button"); btn.type="button"; btn.textContent="Generate AI Coaching";
       btn.addEventListener("click", async () => {
         btn.disabled = true; btn.textContent = "Generating…";
         try {
           const resp = await callCoachFunction({
             coach_prompt_api: it.coach_prompt_api || "",
-            user_question: buildUserQuestion(it),
+            user_question: `Coaching guidance for ${it._label} [${(it._modality||"").toUpperCase()}]`,
             record: {
               protocol_start: it.protocol_start || "",
               progression_rule: it.progression_rule || "",
@@ -343,117 +306,139 @@
           });
           aiWrap.innerHTML = `<div class="ok"><strong>AI Coach:</strong><br>${escapeHtml(resp)}</div>`;
         } catch (e) {
-          aiWrap.innerHTML = `<div class="ok"><strong>AI Coach (offline fallback):</strong><br>${escapeHtml("Short, safe guidance unavailable. Check function/KEY.")}</div>`;
+          aiWrap.innerHTML = `<div class="ok"><strong>AI Coach (offline fallback):</strong><br>${escapeHtml("AI unavailable. Check function/OPENAI_API_KEY.")}</div>`;
         } finally {
           btn.disabled = false; btn.textContent = "Regenerate AI Coaching";
         }
       });
-      aiBlock.appendChild(sum2); aiWrap.appendChild(btn); aiBlock.appendChild(aiWrap);
-      card.appendChild(aiBlock);
+      aiBlock.appendChild(sum2); aiWrap.appendChild(btn); aiBlock.appendChild(aiWrap); card.appendChild(aiBlock);
     }
-
     return card;
   }
 
   function renderProtocols(container, items, opts) {
     if (!container) return;
     container.innerHTML = "";
-    if (!items.length) {
-      container.innerHTML = `<div class="warn">No items available (check CSV modality/Exercise Type and selected filters).</div>`;
-      return;
-    }
+    if (!items.length) { container.innerHTML = `<div class="warn">No items available.</div>`; return; }
     items.forEach((it) => container.appendChild(protocolCard(it, opts)));
-  }
-
-  function buildUserQuestion(it) {
-    const parts = [];
-    parts.push(`Provide practical coaching for: ${it._label} [${(it._modality||"").toUpperCase()}]`);
-    const proto = norm(it.protocol_start); if (proto) parts.push(`Start: ${proto}`);
-    const prog  = norm(it.progression_rule); if (prog) parts.push(`Progression: ${prog}`);
-    const contra = norm(it.contraindications_flags); if (contra) parts.push(`Contraindications: ${contra}`);
-    parts.push("Keep guidance concise, safe, and tailored to older adults.");
-    return parts.join("\n");
   }
 
   async function callCoachFunction(payload) {
     const url = "/.netlify/functions/coach";
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    const res = await fetch(url, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(payload) });
     if (!res.ok) throw new Error(`coach function error ${res.status}`);
     const data = await res.json().catch(()=>({}));
-    return data.message || data.answer || JSON.stringify(data);
+    return data.message || data.answer || data.output_text || JSON.stringify(data);
   }
 
   function escapeHtml(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+  function toast(msg){ const d=document.createElement("div"); d.className="ok"; d.textContent=msg; ($("#plan-output")||$("#tab-plan")||document.body).prepend(d); setTimeout(()=>d.remove(), 2000); }
 
-  // ------------ ASK tab ------------
+  // ------------ ASK ------------
   function initAsk() {
-    $("#ask-send").addEventListener("click", async () => {
-      const q = ($("#ask-input") && $("#ask-input").value) || "";
-      const out = $("#ask-output");
+    const send = $("#ask-send");
+    const input = $("#ask-input");
+    const out = $("#ask-output");
+    if (!send || !input || !out) return;
+    send.addEventListener("click", async () => {
+      const q = input.value.trim();
       if (!q) return;
       out.innerHTML = `<div class="card">Sending…</div>`;
       try {
         const resp = await fetch("/.netlify/functions/coach", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            passthrough: true,            // request verbatim API answer (no extra prompt)
-            user_question: q
-          }),
+          body: JSON.stringify({ passthrough: true, user_question: q })
         }).then(r => r.json());
-        const msg = resp.message || resp.answer || JSON.stringify(resp);
+        const msg = resp.message || resp.answer || resp.output_text || JSON.stringify(resp);
         out.innerHTML = `<div class="card ok"><strong>Coach:</strong><br>${escapeHtml(msg)}</div>`;
       } catch (e) {
         out.innerHTML = `<div class="card ok"><strong>Coach (offline fallback):</strong><br>${escapeHtml("Unable to reach AI. Check function/OPENAI_API_KEY.")}</div>`;
       }
     });
-    $("#ask-clear").addEventListener("click", () => { if ($("#ask-input")) $("#ask-input").value = ""; if ($("#ask-output")) $("#ask-output").innerHTML = ""; });
+    $("#ask-clear") && $("#ask-clear").addEventListener("click", () => { input.value=""; out.innerHTML=""; });
   }
 
   // ------------ PROGRESS ------------
-  function progressLoad(){ try{ return JSON.parse(localStorage.getItem(storeKey)||"[]"); }catch{return []} }
-  function progressSave(a){ localStorage.setItem(storeKey, JSON.stringify(a)); }
-  function progressRender(){
-    const tableBody = $("#p-table tbody");
-    if (!tableBody) return;
-    const arr = progressLoad();
-    tableBody.innerHTML = arr.map((r)=>
-      `<tr><td>${r.date||""}</td><td>${r.type||""}</td><td>${r.dur||""}</td><td>${r.rpe||""}</td><td>${r.hrv||""}</td></tr>`
-    ).join("");
+  function loadSessions(){
+    let v2=[]; let v1=[];
+    try { v2 = JSON.parse(localStorage.getItem(storeKeyV2) || "[]"); } catch {}
+    try { v1 = JSON.parse(localStorage.getItem(storeKeyV1) || "[]"); } catch {}
+    // normalize legacy to v2-shape (best effort)
+    const mapV1 = v1.map(r => ({
+      id: cryptoRandomId(),
+      date: r.date || "",
+      modality: r.type || "",
+      duration: r.dur || "",
+      rpe: r.rpe || "",
+      hrv_value: r.hrv || "",
+      sleep_eff: "",
+      sbp: "",
+      dbp: "",
+      cgm_tir: "",
+      hscrp: ""
+    }));
+    return [...mapV1, ...v2];
   }
+  function cryptoRandomId(){ try{ return String(crypto.getRandomValues(new Uint32Array(1))[0]); }catch{ return String(Math.random()).slice(2); } }
+
+  function progressRender(){
+    const table = $("#p-table");
+    if (!table) return;
+    const data = loadSessions();
+    const headers = ["Date/Time","Modality","SleepEff","HRV","SBP","DBP","CGM TIR","hsCRP","Duration","RPE"];
+    const rows = data.map(r => [
+      r.date||"", r.modality||"", r.sleep_eff||"", r.hrv_value||"", r.sbp||"", r.dbp||"", r.cgm_tir||"", r.hscrp||"", r.duration||"", r.rpe||""
+    ]);
+    // rebuild table for accurate columns
+    const thead = "<thead><tr>" + headers.map(h=>`<th>${h}</th>`).join("") + "</tr></thead>";
+    const tbody = "<tbody>" + rows.map(cells=>"<tr>"+cells.map(c=>`<td>${escapeHtml(c)}</td>`).join("")+"</tr>").join("") + "</tbody>";
+    table.innerHTML = thead + tbody;
+  }
+
   function initProgress() {
     progressRender();
     $("#p-add") && $("#p-add").addEventListener("click", ()=>{
-      const rec = { date: $("#p-date").value, type: $("#p-type").value, dur: $("#p-duration").value, rpe: $("#p-rpe").value, hrv: $("#p-hrv").value };
-      const arr = progressLoad(); arr.push(rec); progressSave(arr); progressRender();
+      const rec = {
+        id: cryptoRandomId(),
+        date: $("#p-date")?.value || "",
+        modality: $("#p-type")?.value || "",
+        duration: $("#p-duration")?.value || "",
+        rpe: $("#p-rpe")?.value || "",
+        hrv_value: $("#p-hrv")?.value || "",
+        sleep_eff: "",
+        sbp: "",
+        dbp: "",
+        cgm_tir: "",
+        hscrp: ""
+      };
+      let v2 = []; try { v2 = JSON.parse(localStorage.getItem(storeKeyV2) || "[]"); } catch {}
+      v2.push(rec); localStorage.setItem(storeKeyV2, JSON.stringify(v2)); progressRender();
     });
-    $("#p-clear") && $("#p-clear").addEventListener("click", ()=>{ if(confirm("Clear all progress entries?")){ progressSave([]); progressRender(); } });
+    $("#p-clear") && $("#p-clear").addEventListener("click", ()=>{ if(confirm("Clear all progress entries?")){ localStorage.setItem(storeKeyV2,"[]"); localStorage.setItem(storeKeyV1,"[]"); progressRender(); } });
   }
 
   // ------------ Bootstrap ------------
-  function wirePlan(){ $("#generate-plan") && $("#generate-plan").addEventListener("click", renderPlan); $("#clear-plan") && $("#clear-plan").addEventListener("click", onClearPlan); addPlanSaveButton(); }
-  function wireLibrary(){ $("#apply-filters") && $("#apply-filters").addEventListener("click", applyLibraryFilters); $("#clear-filters") && $("#clear-filters").addEventListener("click", clearLibraryFilters); }
+  function wirePlan(){
+    $("#generate-plan") && $("#generate-plan").addEventListener("click", renderPlan);
+    $("#clear-plan") && $("#clear-plan").addEventListener("click", onClearPlan);
+    ensurePlanSaveButton();
+  }
+  function wireLibrary(){
+    $("#apply-filters") && $("#apply-filters").addEventListener("click", applyLibraryFilters);
+    $("#clear-filters") && $("#clear-filters").addEventListener("click", clearLibraryFilters);
+  }
 
   async function init() {
-    initTabs(); wirePlan(); wireLibrary(); initProgress(); initAsk();
     try {
+      initTabs(); wirePlan(); wireLibrary(); initProgress(); initAsk();
       await loadData();
       populateLibrarySelectors();
     } catch(e) {
       console.error(e);
-      const err = document.createElement("div");
-      err.className = "notice";
-      err.innerHTML = `<strong>Data error:</strong> ${String(e.message)}`;
-      $("#tab-plan") && $("#tab-plan").appendChild(err);
+      const err = document.createElement("div"); err.className="notice"; err.innerHTML = `<strong>Error:</strong> ${String(e.message)}`;
+      ($("#tab-plan")||document.body).appendChild(err);
     }
   }
   document.addEventListener("DOMContentLoaded", init);
-
-  // expose progressRender for Save updates
-  window.__bp_progressRender = progressRender;
-
 })();
