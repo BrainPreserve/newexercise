@@ -1,40 +1,15 @@
 /* BrainPreserve — Brain Exercise App
-   app.js (2025-10-01)
-   Fixes included:
-   1) PLAN: show ALL matching protocols (no arbitrary 3‑item limit), match exercise_type (Resistance/Aerobic/Both),
-      and render BOTH Non‑AI "Coaching" and "AI Coaching" per protocol.
-   2) LIBRARY: multi‑select filters now combine Exercise Type(s) AND Goal(s). Protocols appear if:
-        - type matches any selected Exercise Type(s) (if any are selected); AND
-        - at least one selected Goal *_goal column has value 1 (if any are selected).
-      For each result, render BOTH Coaching blocks.
-   3) Goals populate strictly from columns whose headers contain "_goal" (as requested).
-   4) Robust CSV loader (tolerates quotes and commas), dynamic header mapping, and safe fallbacks.
-   5) Tabs, clear buttons, and error handling hardened. CSP‑friendly (all JS is external).
-
-   Expected CSV columns (case-insensitive; flexible naming supported):
-     - title
-     - exercise_type (values like "Resistance", "Aerobic", "Muscular" accepted; "Muscular" normalizes to "Resistance")
-     - protocol_start
-     - progression_rule
-     - contraindications_flags (optional)
-     - coach_prompt_api (optional, used to build the AI prompt)
-     - multiple *_goal columns (e.g., vo2_max_goal, cv_goal, body_comp_goal, etc.) with values 0/1
-     - optional tags
-
-   Assumed Netlify function for AI:
-     /.netlify/functions/coach   (POST { question, context })
-   If the function is missing or returns an error, a deterministic, non‑API coaching summary is shown as a fallback.
-
-   Data source path:
-     ./data/master.csv
+   app.js (2025-10-01b)
+   Key corrections:
+   - PLAN uses CSV 'modality' to determine Resistance/Aerobic (not 'Exercise Type').
+   - Visible protocol name = CSV 'Exercise Type' (or fallback to exercise_key, aliases).
+   - LIBRARY filter: "Exercise Type(s)" now refers to the CSV 'Exercise Type' categories, not modality.
+   - Goals combine with type correctly: must match selected category(ies) AND any selected *_goal==1 (when selections exist).
+   - Netlify function payload matches /netlify/functions/coach.js expectations.
 */
 
 (() => {
   "use strict";
-
-  // -------------------------------
-  // Utilities
-  // -------------------------------
 
   const $ = (sel, parent = document) => parent.querySelector(sel);
   const $$ = (sel, parent = document) => Array.from(parent.querySelectorAll(sel));
@@ -42,86 +17,37 @@
   const norm = (s) => (s ?? "").toString().trim();
   const normLower = (s) => norm(s).toLowerCase();
 
-  // Defensive parse for numbers; returns null if invalid
-  function toNum(val) {
-    const n = Number(val);
-    return Number.isFinite(n) ? n : null;
-  }
-
-  // CSV parser that handles quotes, commas, and newlines inside quotes.
   function parseCSV(text) {
     const rows = [];
     let row = [];
     let i = 0;
     let field = "";
     let inQuotes = false;
-
     while (i < text.length) {
       const c = text[i];
-
       if (inQuotes) {
         if (c === '"') {
-          if (text[i + 1] === '"') {
-            field += '"';
-            i += 2;
-            continue;
-          } else {
-            inQuotes = false;
-            i++;
-            continue;
-          }
-        } else {
-          field += c;
-          i++;
-          continue;
-        }
+          if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
+          inQuotes = false; i++; continue;
+        } else { field += c; i++; continue; }
       } else {
-        if (c === '"') {
-          inQuotes = true;
-          i++;
-          continue;
-        }
-        if (c === ",") {
-          row.push(field);
-          field = "";
-          i++;
-          continue;
-        }
-        if (c === "\n") {
-          row.push(field);
-          rows.push(row);
-          row = [];
-          field = "";
-          i++;
-          continue;
-        }
-        if (c === "\r") { // handle CRLF
-          i++;
-          continue;
-        }
-        field += c;
-        i++;
+        if (c === '"') { inQuotes = true; i++; continue; }
+        if (c === ",") { row.push(field); field=""; i++; continue; }
+        if (c === "\n") { row.push(field); rows.push(row); row=[]; field=""; i++; continue; }
+        if (c === "\r") { i++; continue; }
+        field += c; i++;
       }
     }
-    // push last field/row
-    row.push(field);
-    rows.push(row);
-
-    // Trim trailing empty rows
-    while (rows.length && rows[rows.length - 1].every((x) => norm(x) === "")) {
-      rows.pop();
-    }
+    row.push(field); rows.push(row);
+    while (rows.length && rows[rows.length-1].every((x)=>norm(x)==="")) rows.pop();
     return rows;
   }
 
-  // Convert rows to objects with header mapping (lower_snake headers)
   function rowsToObjects(rows) {
     if (!rows.length) return [];
     const headersRaw = rows[0].map((h) => norm(h));
     const headers = headersRaw.map((h) =>
-      normLower(h)
-        .replace(/\s+/g, "_")
-        .replace(/[^\w]+/g, "_")
+      normLower(h).replace(/\s+/g,"_").replace(/[^\w]+/g,"_")
     );
     const out = [];
     for (let r = 1; r < rows.length; r++) {
@@ -134,36 +60,25 @@
     return out;
   }
 
-  // Normalize exercise type values
-  function normalizeType(t) {
-    const s = normLower(t);
-    if (!s) return "";
-    if (s.includes("muscular") || s === "strength") return "resistance";
-    if (s.includes("resistance")) return "resistance";
-    if (s.includes("aerobic") || s.includes("cardio")) return "aerobic";
-    return s;
+  function normalizeModality(s) {
+    const x = normLower(s);
+    if (x.includes("resist") || x.includes("muscular") || x.includes("strength")) return "resistance";
+    if (x.includes("aerobic") || x.includes("cardio")) return "aerobic";
+    return x || "none";
   }
 
-  // Identify goal columns dynamically: headers containing "_goal"
+  function toNum(val) { const n = Number(val); return Number.isFinite(n) ? n : null; }
+
   function goalColumns(items) {
     if (!items.length) return [];
-    const keys = Object.keys(items[0]);
-    return keys.filter((k) => k.endsWith("_goal"));
+    return Object.keys(items[0]).filter((k) => k.endsWith("_goal"));
   }
 
-  // Build human label from a goal key
-  function goalLabelFromKey(key) {
-    return norm(key.replace(/_goal$/i, "").replace(/_/g, " "))
-      .replace(/\b\w/g, (m) => m.toUpperCase());
-  }
-
-  // -------------------------------
-  // Data loading
-  // -------------------------------
-
+  // ------------ Global Data ------------
   let DATA = [];
   let GOAL_COLS = [];
-  let TYPE_OPTIONS = [];
+  let CATEGORY_OPTIONS = [];  // CSV "Exercise Type" values (visible categories)
+  let MODALITY_OPTIONS = [];  // normalized modalities (resistance/aerobic/none)
 
   async function loadData() {
     const url = "./data/master.csv";
@@ -173,54 +88,45 @@
     const rows = parseCSV(text);
     const items = rowsToObjects(rows);
 
-    // Normalize types and coerce 0/1 in goal columns
-    items.forEach((it) => {
-      it.exercise_type = normalizeType(it.exercise_type ?? it.type ?? "");
-      // Accept "title" or "name"
-      it.title = it.title || it.name || "(Untitled Protocol)";
-      // normalize tags string
-      if (typeof it.tags === "string") it.tags = it.tags;
-    });
-
-    const gcols = goalColumns(items);
+    // Map fields:
+    // - visible category label: prefer "exercise_type" (CSV header "Exercise Type"), else "exercise_key" or "aliases"
+    // - modality: from CSV "modality"
     for (const it of items) {
-      for (const g of gcols) {
-        const v = normLower(it[g]);
-        // Coerce truthiness: "1", "true", "y", "yes" => 1; else 0
-        it[g] = (v === "1" || v === "true" || v === "y" || v === "yes") ? 1 : Number(v) === 1 ? 1 : 0;
+      const categoryLabel = norm(it.exercise_type) || norm(it.exercise_key) || norm(it.aliases);
+      it._label = categoryLabel || "(Untitled)";
+      it._modality = normalizeModality(it.modality || it.type || "");
+
+      // Coerce goals to 0/1
+      for (const key of Object.keys(it)) {
+        if (key.endsWith("_goal")) {
+          const v = normLower(it[key]);
+          it[key] = (v === "1" || v === "true" || v === "y" || v === "yes") ? 1 : Number(v) === 1 ? 1 : 0;
+        }
       }
     }
 
-    // Collect unique type options
-    const types = Array.from(new Set(items.map((it) => it.exercise_type))).filter(Boolean);
     DATA = items;
-    GOAL_COLS = gcols;
-    TYPE_OPTIONS = types;
+    GOAL_COLS = goalColumns(items);
+    CATEGORY_OPTIONS = Array.from(new Set(items.map((it) => it._label))).filter(Boolean).sort();
+    MODALITY_OPTIONS = Array.from(new Set(items.map((it) => it._modality))).filter(Boolean).sort();
   }
 
-  // -------------------------------
-  // UI wiring: tabs
-  // -------------------------------
-
+  // ------------ Tabs ------------
   function initTabs() {
-    const tabs = $$(".tab");
-    tabs.forEach((btn) => {
+    $$(".tab").forEach((btn) => {
       btn.addEventListener("click", () => {
         const name = btn.getAttribute("data-tab");
-        tabs.forEach((b) => b.classList.toggle("active", b === btn));
+        $$(".tab").forEach((b) => b.classList.toggle("active", b === btn));
         $$(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === `tab-${name}`));
       });
     });
   }
 
-  // -------------------------------
-  // PLAN tab
-  // -------------------------------
-
-  function planSelectedType() {
+  // ------------ PLAN ------------
+  function planSelectedModality() {
     const checked = $$('input[name="etype"]:checked');
     if (!checked.length) return "both";
-    return checked[0].value;
+    return checked[0].value; // resistance | aerobic | both
   }
 
   function collectVitals() {
@@ -234,59 +140,44 @@
     };
   }
 
-  function filterByType(items, typeSel) {
-    if (typeSel === "both") return items;
-    return items.filter((it) => it.exercise_type === typeSel);
-  }
-
-  function renderPlan(items) {
-    const out = $("#plan-output");
-    out.innerHTML = "";
-    if (!items.length) {
-      out.innerHTML = `<div class="warn">No items available (check CSV exercise_type/title).</div>`;
-      return;
-    }
-    // Render all (no artificial cap)
-    items.forEach((it) => out.appendChild(protocolCard(it, { showGoalsBadges: true, includeAI: true })));
+  function filterPlanItems() {
+    const sel = planSelectedModality();
+    if (sel === "both") return DATA.filter((it) => it._modality === "resistance" || it._modality === "aerobic");
+    return DATA.filter((it) => it._modality === sel);
   }
 
   async function onGeneratePlan() {
-    const typeSel = planSelectedType(); // resistance / aerobic / both
-    const items = filterByType(DATA, typeSel);
-    renderPlan(items);
+    const items = filterPlanItems();
+    renderProtocols($("#plan-output"), items, { showGoalsBadges: true, includeAI: true });
   }
 
   function onClearPlan() {
     $("#plan-form").reset();
-    $("#plan-output").innerHTML = "";
-    // default to both
     $$('input[name="etype"]').forEach((r) => (r.checked = r.value === "both"));
+    $("#plan-output").innerHTML = "";
   }
 
-  // -------------------------------
-  // LIBRARY tab
-  // -------------------------------
-
+  // ------------ LIBRARY ------------
   function populateLibrarySelectors() {
-    const $types = $("#lib-types");
-    const $goals = $("#lib-goals");
-    $types.innerHTML = "";
-    $goals.innerHTML = "";
+    const typesSel = $("#lib-types");
+    const goalsSel = $("#lib-goals");
+    typesSel.innerHTML = "";
+    goalsSel.innerHTML = "";
 
-    // Exercise types
-    TYPE_OPTIONS.sort().forEach((t) => {
+    // Exercise Type(s) = visible categories from CSV "Exercise Type"
+    CATEGORY_OPTIONS.forEach((label) => {
       const opt = document.createElement("option");
-      opt.value = t;
-      opt.textContent = t.charAt(0).toUpperCase() + t.slice(1);
-      $types.appendChild(opt);
+      opt.value = label;
+      opt.textContent = label;
+      typesSel.appendChild(opt);
     });
 
-    // Goals from *_goal columns
-    GOAL_COLS.sort().forEach((g) => {
+    // Goal(s) from *_goal columns
+    GOAL_COLS.forEach((g) => {
       const opt = document.createElement("option");
       opt.value = g;
-      opt.textContent = goalLabelFromKey(g);
-      $goals.appendChild(opt);
+      opt.textContent = g.replace(/_goal$/i, "").replace(/_/g, " ").replace(/\b\w/g, (m)=>m.toUpperCase());
+      goalsSel.appendChild(opt);
     });
   }
 
@@ -295,44 +186,28 @@
   }
 
   function applyLibraryFilters() {
-    const typeVals = getMultiSelectValues($("#lib-types")); // exercise_type values (normalized)
-    const goalCols = getMultiSelectValues($("#lib-goals")); // *_goal keys
+    const selCategories = new Set(getMultiSelectValues($("#lib-types"))); // CSV category labels
+    const selGoals = getMultiSelectValues($("#lib-goals"));              // *_goal keys
 
     let items = DATA.slice();
 
-    // Filter by type if any selected
-    if (typeVals.length) {
-      const set = new Set(typeVals);
-      items = items.filter((it) => set.has(it.exercise_type));
+    if (selCategories.size) {
+      items = items.filter((it) => selCategories.has(it._label));
+    }
+    if (selGoals.length) {
+      items = items.filter((it) => selGoals.some((g) => Number(it[g]) === 1));
     }
 
-    // Filter by goals if any selected: keep if ANY selected goal column == 1
-    if (goalCols.length) {
-      items = items.filter((it) => goalCols.some((g) => Number(it[g]) === 1));
-    }
-
-    const out = $("#library-output");
-    out.innerHTML = "";
-
-    if (!items.length) {
-      out.innerHTML = `<div class="warn">No items match the selected filter(s).</div>`;
-      return;
-    }
-
-    items.forEach((it) => out.appendChild(protocolCard(it, { showGoalsBadges: true, includeAI: true })));
+    renderProtocols($("#library-output"), items, { showGoalsBadges: true, includeAI: true });
   }
 
   function clearLibraryFilters() {
     $("#library-form").reset();
-    // Explicitly clear multi-selects
     $$("#lib-types option, #lib-goals option").forEach((o) => (o.selected = false));
     $("#library-output").innerHTML = "";
   }
 
-  // -------------------------------
-  // PROTOCOL CARD RENDERING
-  // -------------------------------
-
+  // ------------ Rendering ------------
   function badge(text) {
     const span = document.createElement("span");
     span.className = "badge";
@@ -342,11 +217,7 @@
 
   function goalsBadges(it) {
     const frag = document.createDocumentFragment();
-    GOAL_COLS.forEach((g) => {
-      if (Number(it[g]) === 1) {
-        frag.appendChild(badge(goalLabelFromKey(g)));
-      }
-    });
+    GOAL_COLS.forEach((g) => { if (Number(it[g]) === 1) frag.appendChild(badge(g.replace(/_goal$/,""))); });
     return frag;
   }
 
@@ -356,30 +227,23 @@
     card.className = "card";
 
     const head = document.createElement("div");
-    head.style.display = "flex";
-    head.style.justifyContent = "space-between";
-    head.style.alignItems = "baseline";
+    head.style.display = "flex"; head.style.justifyContent = "space-between"; head.style.alignItems = "baseline";
     const h3 = document.createElement("h3");
-    h3.textContent = it.title || "(Untitled Protocol)";
+    h3.textContent = it._label || "(Untitled)";
     const et = document.createElement("div");
-    et.className = "badge";
-    et.textContent = (it.exercise_type || "").toUpperCase();
-    head.appendChild(h3);
-    head.appendChild(et);
+    et.className = "badge"; et.textContent = (it._modality || "").toUpperCase();
+    head.appendChild(h3); head.appendChild(et);
     card.appendChild(head);
 
     if (showGoalsBadges) {
-      const kv = document.createElement("div");
-      kv.className = "kv";
-      kv.appendChild(goalsBadges(it));
+      const kv = document.createElement("div"); kv.className = "kv"; kv.appendChild(goalsBadges(it));
       card.appendChild(kv);
     }
 
-    // Non‑API Coaching (from CSV: protocol_start + progression_rule)
+    // Non-AI Coaching
     const coachBlock = document.createElement("details");
     coachBlock.open = true;
-    const sum1 = document.createElement("summary");
-    sum1.textContent = "Coaching (non‑AI)";
+    const sum1 = document.createElement("summary"); sum1.textContent = "Coaching (non-AI)";
     const nonApi = document.createElement("div");
     const proto = norm(it.protocol_start);
     const prog = norm(it.progression_rule);
@@ -389,103 +253,88 @@
       prog ? `<p><strong>Progression:</strong> ${prog}</p>` : "",
       contra ? `<p class="notice"><strong>Contraindications:</strong> ${contra}</p>` : "",
     ].filter(Boolean).join("");
-    coachBlock.appendChild(sum1);
-    coachBlock.appendChild(nonApi);
+    coachBlock.appendChild(sum1); coachBlock.appendChild(nonApi);
     card.appendChild(coachBlock);
 
-    // AI Coaching
     if (includeAI) {
       const aiBlock = document.createElement("details");
       aiBlock.open = false;
-      const sum2 = document.createElement("summary");
-      sum2.textContent = "AI Coaching";
+      const sum2 = document.createElement("summary"); sum2.textContent = "AI Coaching";
       const aiWrap = document.createElement("div");
       const btn = document.createElement("button");
-      btn.type = "button";
-      btn.textContent = "Generate AI Coaching";
+      btn.type = "button"; btn.textContent = "Generate AI Coaching";
       btn.addEventListener("click", async () => {
-        btn.disabled = true;
-        btn.textContent = "Generating…";
+        btn.disabled = true; btn.textContent = "Generating…";
         const vitals = collectVitals();
-        const prompt = buildAIPrompt(it, vitals);
         try {
-          const resp = await callCoachFunction(prompt, { protocol: it, vitals });
+          const resp = await callCoachFunction({
+            coach_prompt_api: it.coach_prompt_api || "",
+            user_question: buildUserQuestion(it, vitals),
+            record: {
+              protocol_start: it.protocol_start || "",
+              progression_rule: it.progression_rule || "",
+              coach_script_non_api: it.coach_script_non_api || ""
+            }
+          });
           aiWrap.innerHTML = `<div class="ok"><strong>AI Coach:</strong><br>${escapeHtml(resp)}</div>`;
         } catch (e) {
-          // Deterministic fallback if function missing or errors
           aiWrap.innerHTML = `<div class="ok"><strong>AI Coach (offline fallback):</strong><br>${escapeHtml(fallbackAICoach(it, vitals))}</div>`;
         } finally {
-          btn.disabled = false;
-          btn.textContent = "Regenerate AI Coaching";
+          btn.disabled = false; btn.textContent = "Regenerate AI Coaching";
         }
       });
-      aiBlock.appendChild(sum2);
-      aiWrap.appendChild(btn);
-      aiBlock.appendChild(aiWrap);
+      aiBlock.appendChild(sum2); aiWrap.appendChild(btn); aiBlock.appendChild(aiWrap);
       card.appendChild(aiBlock);
     }
 
     return card;
   }
 
-  function buildAIPrompt(it, vitals) {
+  function renderProtocols(container, items, opts) {
+    container.innerHTML = "";
+    if (!items.length) {
+      container.innerHTML = `<div class="warn">No items available (check CSV modality/Exercise Type).</div>`;
+      return;
+    }
+    items.forEach((it) => container.appendChild(protocolCard(it, opts)));
+  }
+
+  function buildUserQuestion(it, vitals) {
     const parts = [];
-    // Prefer CSV-provided coaching prompt if present
-    if (it.coach_prompt_api) parts.push(String(it.coach_prompt_api));
-    // Always provide context
-    parts.push(`Protocol: ${it.title} [type: ${it.exercise_type}]`);
-    const proto = norm(it.protocol_start);
-    if (proto) parts.push(`Protocol start: ${proto}`);
-    const prog = norm(it.progression_rule);
-    if (prog) parts.push(`Progression rules: ${prog}`);
-    const contra = norm(it.contraindications_flags);
-    if (contra) parts.push(`Contraindications: ${contra}`);
+    parts.push(`Provide practical coaching for: ${it._label} [${it._modality.toUpperCase()}]`);
+    const proto = norm(it.protocol_start); if (proto) parts.push(`Start: ${proto}`);
+    const prog  = norm(it.progression_rule); if (prog) parts.push(`Progression: ${prog}`);
+    const contra = norm(it.contraindications_flags); if (contra) parts.push(`Contraindications: ${contra}`);
     parts.push(`Vitals — SleepEff%: ${vitals.sleep_eff ?? "NA"}, HRV(ms): ${vitals.hrv_value ?? "NA"}, BP: ${vitals.sbp ?? "NA"}/${vitals.dbp ?? "NA"}, CGM TIR%: ${vitals.cgm_tir ?? "NA"}, hsCRP: ${vitals.hscrp ?? "NA"}`);
-    parts.push("Give concise, older‑adult‑friendly guidance (plain English, safety first).");
+    parts.push("Keep guidance concise, safe, and tailored to older adults.");
     return parts.join("\n");
   }
 
-  async function callCoachFunction(question, context) {
-    // Netlify functions path
+  async function callCoachFunction(payload) {
     const url = "/.netlify/functions/coach";
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, context }),
+      body: JSON.stringify(payload),
     });
-    if (!res.ok) {
-      throw new Error(`coach function error ${res.status}`);
-    }
-    const data = await res.json().catch(() => ({}));
-    // Expect { answer: string } or raw text
-    return data.answer || data.result || (await res.text());
+    if (!res.ok) throw new Error(`coach function error ${res.status}`);
+    const data = await res.json().catch(()=>({}));
+    // Accept either {message} or {answer}
+    return data.message || data.answer || JSON.stringify(data);
   }
 
   function fallbackAICoach(it, vitals) {
     const lines = [];
-    lines.push(`Focus on ${it.title} (${(it.exercise_type || "").toUpperCase()}).`);
-    if (vitals.sbp && vitals.sbp >= 160) lines.push("• SBP ≥160: keep intensity light; avoid breath‑holding and heavy straining today.");
-    if (vitals.hscrp && vitals.hscrp >= 3) lines.push("• hsCRP ≥3: prefer lower‑impact aerobic work or shorter resistance bouts.");
-    if (vitals.hrv_value && vitals.hrv_value < 25) lines.push("• Low HRV: extend warm‑up and reduce volume by ~20–30%.");
-    const proto = norm(it.protocol_start);
-    if (proto) lines.push(`• Start: ${proto}`);
-    const prog = norm(it.progression_rule);
-    if (prog) lines.push(`• Progress when: ${prog}`);
+    lines.push(`Focus on ${it._label} (${(it._modality || "").toUpperCase()}).`);
+    const proto = norm(it.protocol_start); if (proto) lines.push(`• Start: ${proto}`);
+    const prog = norm(it.progression_rule); if (prog) lines.push(`• Progress when: ${prog}`);
     lines.push("• Stop if you experience chest pain, dizziness, or concerning symptoms.");
     return lines.join("\n");
   }
 
-  function escapeHtml(s) {
-    return String(s)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
-  }
+  function escapeHtml(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 
-  // -------------------------------
-  // ASK tab (simple coach function wrapper)
-  // -------------------------------
-
+  // ------------ ASK tab ------------
   function initAsk() {
     $("#ask-send").addEventListener("click", async () => {
       const q = norm($("#ask-input").value);
@@ -493,101 +342,55 @@
       if (!q) return;
       out.innerHTML = `<div class="card">Sending…</div>`;
       try {
-        const vitals = collectVitals();
-        const answer = await callCoachFunction(q, { vitals });
-        out.innerHTML = `<div class="card ok"><strong>Coach:</strong><br>${escapeHtml(answer)}</div>`;
+        const resp = await callCoachFunction({
+          coach_prompt_api: "",
+          user_question: q,
+          record: {},
+        });
+        out.innerHTML = `<div class="card ok"><strong>Coach:</strong><br>${escapeHtml(resp)}</div>`;
       } catch (e) {
-        out.innerHTML = `<div class="card ok"><strong>Coach (offline fallback):</strong><br>${escapeHtml("When in doubt, choose low‑risk options: Zone 2 walking or a short resistance session. Warm up, breathe continuously (avoid Valsalva), and progress gradually.")}</div>`;
+        out.innerHTML = `<div class="card ok"><strong>Coach (offline fallback):</strong><br>${escapeHtml("Choose the lowest-risk option today: a short Zone 2 walk or gentle resistance basics. Warm up, breathe steadily, and stop if unwell.")}</div>`;
       }
     });
-    $("#ask-clear").addEventListener("click", () => {
-      $("#ask-input").value = "";
-      $("#ask-output").innerHTML = "";
-    });
+    $("#ask-clear").addEventListener("click", () => { $("#ask-input").value = ""; $("#ask-output").innerHTML = ""; });
   }
 
-  // -------------------------------
-  // PROGRESS tab (local only)
-  // -------------------------------
-
+  // ------------ PROGRESS ------------
   function initProgress() {
     const tableBody = $("#p-table tbody");
     const storeKey = "bp_ex_prog_v1";
-
-    function load() {
-      try {
-        return JSON.parse(localStorage.getItem(storeKey) || "[]");
-      } catch {
-        return [];
-      }
-    }
-    function save(arr) {
-      localStorage.setItem(storeKey, JSON.stringify(arr));
-    }
-    function render() {
+    function load(){ try{ return JSON.parse(localStorage.getItem(storeKey)||"[]"); }catch{return []} }
+    function save(a){ localStorage.setItem(storeKey, JSON.stringify(a)); }
+    function render(){
       const arr = load();
-      tableBody.innerHTML = arr.map((r) =>
-        `<tr><td>${r.date || ""}</td><td>${r.type || ""}</td><td>${r.dur || ""}</td><td>${r.rpe || ""}</td><td>${r.hrv || ""}</td></tr>`
+      tableBody.innerHTML = arr.map((r)=>
+        `<tr><td>${r.date||""}</td><td>${r.type||""}</td><td>${r.dur||""}</td><td>${r.rpe||""}</td><td>${r.hrv||""}</td></tr>`
       ).join("");
     }
-
-    $("#p-add").addEventListener("click", () => {
-      const rec = {
-        date: $("#p-date").value,
-        type: $("#p-type").value,
-        dur: $("#p-duration").value,
-        rpe: $("#p-rpe").value,
-        hrv: $("#p-hrv").value,
-      };
-      const arr = load();
-      arr.push(rec);
-      save(arr);
-      render();
+    $("#p-add").addEventListener("click", ()=>{
+      const rec = { date: $("#p-date").value, type: $("#p-type").value, dur: $("#p-duration").value, rpe: $("#p-rpe").value, hrv: $("#p-hrv").value };
+      const arr = load(); arr.push(rec); save(arr); render();
     });
-
-    $("#p-clear").addEventListener("click", () => {
-      if (confirm("Clear all progress entries?")) {
-        save([]);
-        render();
-      }
-    });
-
+    $("#p-clear").addEventListener("click", ()=>{ if(confirm("Clear all progress entries?")){ save([]); render(); } });
     render();
   }
 
-  // -------------------------------
-  // Bootstrap
-  // -------------------------------
-
-  function wirePlan() {
-    $("#generate-plan").addEventListener("click", onGeneratePlan);
-    $("#clear-plan").addEventListener("click", onClearPlan);
-  }
-
-  function wireLibrary() {
-    $("#apply-filters").addEventListener("click", applyLibraryFilters);
-    $("#clear-filters").addEventListener("click", clearLibraryFilters);
-  }
+  // ------------ Bootstrap ------------
+  function wirePlan(){ $("#generate-plan").addEventListener("click", onGeneratePlan); $("#clear-plan").addEventListener("click", onClearPlan); }
+  function wireLibrary(){ $("#apply-filters").addEventListener("click", applyLibraryFilters); $("#clear-filters").addEventListener("click", clearLibraryFilters); }
 
   async function init() {
-    initTabs();
-    wirePlan();
-    wireLibrary();
-    initProgress();
-    initAsk();
+    initTabs(); wirePlan(); wireLibrary(); initProgress(); initAsk();
     try {
       await loadData();
       populateLibrarySelectors();
-      // Auto‑generate when page loads (optional: comment out if not desired)
-      // onGeneratePlan();
-    } catch (e) {
+    } catch(e) {
       console.error(e);
       const err = document.createElement("div");
       err.className = "notice";
-      err.innerHTML = `<strong>Data error:</strong> ${escapeHtml(e.message)}`;
+      err.innerHTML = `<strong>Data error:</strong> ${String(e.message)}`;
       $("#tab-plan").appendChild(err);
     }
   }
-
   document.addEventListener("DOMContentLoaded", init);
 })();
