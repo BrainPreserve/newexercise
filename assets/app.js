@@ -1,11 +1,11 @@
 /* BrainPreserve — Brain Exercise App
-   app.js (2025-10-01b)
-   Key corrections:
-   - PLAN uses CSV 'modality' to determine Resistance/Aerobic (not 'Exercise Type').
-   - Visible protocol name = CSV 'Exercise Type' (or fallback to exercise_key, aliases).
-   - LIBRARY filter: "Exercise Type(s)" now refers to the CSV 'Exercise Type' categories, not modality.
-   - Goals combine with type correctly: must match selected category(ies) AND any selected *_goal==1 (when selections exist).
-   - Netlify function payload matches /netlify/functions/coach.js expectations.
+   app.js (2025-10-01c)
+   Updates:
+   - PLAN: Adds "Save data" button to store multiple sessions/day into Progress (localStorage).
+   - LIBRARY: Robust AND-filter (Exercise Type(s) categories AND any selected *_goal==1).
+   - DETAILS: Per-protocol <details> shows cognitive_targets, mechanism_tags, direct_cognitive_benefits,
+              indirect_cognitive_benefits, mechanisms_brain_body — read directly from CSV (no guessing).
+   - AI: Uses your Netlify function contract exactly ({coach_prompt_api, user_question, record}).
 */
 
 (() => {
@@ -19,19 +19,16 @@
 
   function parseCSV(text) {
     const rows = [];
-    let row = [];
-    let i = 0;
-    let field = "";
-    let inQuotes = false;
+    let row = [], field = "", i = 0, inQ = false;
     while (i < text.length) {
       const c = text[i];
-      if (inQuotes) {
+      if (inQ) {
         if (c === '"') {
           if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
-          inQuotes = false; i++; continue;
+          inQ = false; i++; continue;
         } else { field += c; i++; continue; }
       } else {
-        if (c === '"') { inQuotes = true; i++; continue; }
+        if (c === '"') { inQ = true; i++; continue; }
         if (c === ",") { row.push(field); field=""; i++; continue; }
         if (c === "\n") { row.push(field); rows.push(row); row=[]; field=""; i++; continue; }
         if (c === "\r") { i++; continue; }
@@ -52,9 +49,7 @@
     const out = [];
     for (let r = 1; r < rows.length; r++) {
       const obj = {};
-      for (let c = 0; c < headers.length; c++) {
-        obj[headers[c]] = rows[r][c] ?? "";
-      }
+      for (let c = 0; c < headers.length; c++) obj[headers[c]] = rows[r][c] ?? "";
       out.push(obj);
     }
     return out;
@@ -77,8 +72,8 @@
   // ------------ Global Data ------------
   let DATA = [];
   let GOAL_COLS = [];
-  let CATEGORY_OPTIONS = [];  // CSV "Exercise Type" values (visible categories)
-  let MODALITY_OPTIONS = [];  // normalized modalities (resistance/aerobic/none)
+  let CATEGORY_OPTIONS = [];  // visible categories from CSV "Exercise Type"
+  let MODALITY_OPTIONS = [];  // resistance/aerobic/none
 
   async function loadData() {
     const url = "./data/master.csv";
@@ -88,15 +83,10 @@
     const rows = parseCSV(text);
     const items = rowsToObjects(rows);
 
-    // Map fields:
-    // - visible category label: prefer "exercise_type" (CSV header "Exercise Type"), else "exercise_key" or "aliases"
-    // - modality: from CSV "modality"
     for (const it of items) {
-      const categoryLabel = norm(it.exercise_type) || norm(it.exercise_key) || norm(it.aliases);
-      it._label = categoryLabel || "(Untitled)";
+      const label = it.exercise_type || it.exercise_key || it.aliases;
+      it._label = norm(label) || "(Untitled)";
       it._modality = normalizeModality(it.modality || it.type || "");
-
-      // Coerce goals to 0/1
       for (const key of Object.keys(it)) {
         if (key.endsWith("_goal")) {
           const v = normLower(it[key]);
@@ -157,6 +147,41 @@
     $("#plan-output").innerHTML = "";
   }
 
+  // Add a "Save data" button next to Generate/Clear, without editing HTML
+  function addPlanSaveButton() {
+    const actions = $("#plan-form .actions");
+    if (!actions) return;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.id = "save-session";
+    btn.textContent = "Save data";
+    btn.addEventListener("click", savePlanSession);
+    actions.appendChild(btn);
+  }
+
+  function savePlanSession() {
+    const storeKey = "bp_ex_prog_v1";
+    const now = new Date();
+    const rec = {
+      date: now.toISOString().slice(0,16).replace("T"," "), // YYYY-MM-DD HH:MM
+      type: planSelectedModality().toUpperCase(),           // store modality as 'type'
+      dur: "",                                              // user can fill later in Progress tab
+      rpe: "",
+      hrv: $("#hrv_value").value || "",
+      extras: collectVitals(),                               // keep full vitals payload
+    };
+    let arr;
+    try { arr = JSON.parse(localStorage.getItem(storeKey) || "[]"); } catch { arr = []; }
+    arr.push(rec);
+    localStorage.setItem(storeKey, JSON.stringify(arr));
+    // lightweight confirmation
+    const msg = document.createElement("div");
+    msg.className = "ok";
+    msg.textContent = "Session saved to Progress.";
+    $("#plan-output").prepend(msg);
+    setTimeout(()=>{ msg.remove(); }, 2000);
+  }
+
   // ------------ LIBRARY ------------
   function populateLibrarySelectors() {
     const typesSel = $("#lib-types");
@@ -164,7 +189,6 @@
     typesSel.innerHTML = "";
     goalsSel.innerHTML = "";
 
-    // Exercise Type(s) = visible categories from CSV "Exercise Type"
     CATEGORY_OPTIONS.forEach((label) => {
       const opt = document.createElement("option");
       opt.value = label;
@@ -172,7 +196,6 @@
       typesSel.appendChild(opt);
     });
 
-    // Goal(s) from *_goal columns
     GOAL_COLS.forEach((g) => {
       const opt = document.createElement("option");
       opt.value = g;
@@ -186,17 +209,15 @@
   }
 
   function applyLibraryFilters() {
-    const selCategories = new Set(getMultiSelectValues($("#lib-types"))); // CSV category labels
+    const selCategories = new Set(getMultiSelectValues($("#lib-types"))); // Exercise Type labels
     const selGoals = getMultiSelectValues($("#lib-goals"));              // *_goal keys
 
-    let items = DATA.slice();
-
-    if (selCategories.size) {
-      items = items.filter((it) => selCategories.has(it._label));
-    }
-    if (selGoals.length) {
-      items = items.filter((it) => selGoals.some((g) => Number(it[g]) === 1));
-    }
+    // AND logic: must satisfy both when both have selections
+    const items = DATA.filter((it) => {
+      const typeOK = (selCategories.size === 0) || selCategories.has(it._label);
+      const goalOK = (selGoals.length === 0) || selGoals.some((g) => Number(it[g]) === 1);
+      return typeOK && goalOK;
+    });
 
     renderProtocols($("#library-output"), items, { showGoalsBadges: true, includeAI: true });
   }
@@ -219,6 +240,38 @@
     const frag = document.createDocumentFragment();
     GOAL_COLS.forEach((g) => { if (Number(it[g]) === 1) frag.appendChild(badge(g.replace(/_goal$/,""))); });
     return frag;
+  }
+
+  function detailsBlock(it) {
+    const keys = [
+      { key: "cognitive_targets", label: "Cognitive Targets" },
+      { key: "mechanism_tags", label: "Mechanisms / Tags" },
+      { key: "direct_cognitive_benefits", label: "Direct Cognitive Benefits" },
+      { key: "indirect_cognitive_benefits", label: "Indirect Cognitive Benefits" },
+      { key: "mechanisms_brain_body", label: "Mechanisms (Brain–Body)" },
+    ];
+    const det = document.createElement("details");
+    det.open = false;
+    const sum = document.createElement("summary");
+    sum.textContent = "Details";
+    det.appendChild(sum);
+    const box = document.createElement("div");
+    keys.forEach(({key, label}) => {
+      const val = norm(it[key]);
+      if (val) {
+        const p = document.createElement("p");
+        p.innerHTML = `<strong>${label}:</strong> ${escapeHtml(val)}`;
+        box.appendChild(p);
+      }
+    });
+    if (!box.childNodes.length) {
+      const p = document.createElement("p");
+      p.className = "muted";
+      p.textContent = "No additional details in CSV.";
+      box.appendChild(p);
+    }
+    det.appendChild(box);
+    return det;
   }
 
   function protocolCard(it, opts = {}) {
@@ -249,12 +302,15 @@
     const prog = norm(it.progression_rule);
     const contra = norm(it.contraindications_flags);
     nonApi.innerHTML = [
-      proto ? `<p><strong>Protocol start:</strong> ${proto}</p>` : "",
-      prog ? `<p><strong>Progression:</strong> ${prog}</p>` : "",
-      contra ? `<p class="notice"><strong>Contraindications:</strong> ${contra}</p>` : "",
+      proto ? `<p><strong>Protocol start:</strong> ${escapeHtml(proto)}</p>` : "",
+      prog ? `<p><strong>Progression:</strong> ${escapeHtml(prog)}</p>` : "",
+      contra ? `<p class="notice"><strong>Contraindications:</strong> ${escapeHtml(contra)}</p>` : "",
     ].filter(Boolean).join("");
     coachBlock.appendChild(sum1); coachBlock.appendChild(nonApi);
     card.appendChild(coachBlock);
+
+    // Details (from CSV fields; no guessing)
+    card.appendChild(detailsBlock(it));
 
     if (includeAI) {
       const aiBlock = document.createElement("details");
@@ -293,7 +349,7 @@
   function renderProtocols(container, items, opts) {
     container.innerHTML = "";
     if (!items.length) {
-      container.innerHTML = `<div class="warn">No items available (check CSV modality/Exercise Type).</div>`;
+      container.innerHTML = `<div class="warn">No items available (check CSV modality/Exercise Type and selected filters).</div>`;
       return;
     }
     items.forEach((it) => container.appendChild(protocolCard(it, opts)));
@@ -301,7 +357,7 @@
 
   function buildUserQuestion(it, vitals) {
     const parts = [];
-    parts.push(`Provide practical coaching for: ${it._label} [${it._modality.toUpperCase()}]`);
+    parts.push(`Provide practical coaching for: ${it._label} [${(it._modality||"").toUpperCase()}]`);
     const proto = norm(it.protocol_start); if (proto) parts.push(`Start: ${proto}`);
     const prog  = norm(it.progression_rule); if (prog) parts.push(`Progression: ${prog}`);
     const contra = norm(it.contraindications_flags); if (contra) parts.push(`Contraindications: ${contra}`);
@@ -319,7 +375,6 @@
     });
     if (!res.ok) throw new Error(`coach function error ${res.status}`);
     const data = await res.json().catch(()=>({}));
-    // Accept either {message} or {answer}
     return data.message || data.answer || JSON.stringify(data);
   }
 
@@ -376,7 +431,7 @@
   }
 
   // ------------ Bootstrap ------------
-  function wirePlan(){ $("#generate-plan").addEventListener("click", onGeneratePlan); $("#clear-plan").addEventListener("click", onClearPlan); }
+  function wirePlan(){ $("#generate-plan").addEventListener("click", onGeneratePlan); $("#clear-plan").addEventListener("click", onClearPlan); addPlanSaveButton(); }
   function wireLibrary(){ $("#apply-filters").addEventListener("click", applyLibraryFilters); $("#clear-filters").addEventListener("click", clearLibraryFilters); }
 
   async function init() {
